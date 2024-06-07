@@ -1,0 +1,105 @@
+---
+title: "Piecewise exponential models"
+output: html_document
+date: "2024-06-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("survival")
+```
+
+
+```{r}
+library(haven)
+library(dplyr)
+library(survival)
+```
+
+```{r}
+recid <- read_dta("https://www.stata.com/data/jwooldridge/eacsap/recid.dta")
+head(recid)
+```
+
+```{r}
+recid <- mutate(recid, fail = 1 - cens, id = row_number())
+filter(recid, id == 9) |> select(id, durat, fail)
+```
+
+```{r}
+
+
+breaks <- seq(12, 60, by=12)
+ 
+recidx <- survSplit(Surv(durat, fail) ~ ., data = recid, 
+   cut = breaks, episode = "interval", start = "start")
+ 
+recidx <- mutate(recidx, exposure = durat - start,
+
+interval = factor(interval,  labels = 
+   paste("(", c(0,breaks), ",", c(breaks,100), "]", sep=""))) |>
+   rename(events = fail)
+
+ 
+nrow(recidx)
+head(recidx)
+```
+
+```{r}
+filter(recidx, id==9) |> select(id,start,durat,interval, events, exposure)
+```
+
+```{r}
+fit <- glm(events~interval+workprg+priors+tserved+felon+alcohol+drugs+
+  black+married+educ+age+offset(log(exposure)), 
+  data=recidx, family=poisson)
+ summary(fit)
+```
+
+```{r}
+1 - exp(coef(fit)["felon"])
+```
+
+```{r}
+b <- coef(fit)
+h <- exp(b[1] + c(0, b[2:6]))
+H <- cumsum(12*h)
+S <- exp(-H)
+names(S)[1] <- names(H)[1] <- "interval(0,12])"
+S
+```
+
+```{r}
+xvars <- names(coef(fit))[7:16]
+pset <- filter(recidx, interval == "(0,12]") |>  select(xvars) 
+```
+
+```{r}
+means <- colMeans(pset)
+```
+
+```{r}
+xb <- sum(coef(fit)[xvars] * means)
+exp(-(H * exp(xb)))[5]
+```
+
+
+```{r}
+xb0 <- xb - coef(fit)["felon"] * means["felon"]
+xb1 <- xb0 + coef(fit)["felon"]
+data.frame(non.felon = exp(-H[5]*exp(xb0)), felon= exp(-H[5]*exp(xb1)))
+```
+
+
+```{r}
+xb0 <- as.matrix(mutate(pset, felon=0)) %*% coef(fit)[xvars]
+xb1 <- as.matrix(mutate(pset, felon=1)) %*% coef(fit)[xvars]
+data.frame(non.felon=mean(exp(-H[5] * exp(xb0))), 
+               felon=mean(exp(-H[5] * exp(xb1))))
+```
+
+
+

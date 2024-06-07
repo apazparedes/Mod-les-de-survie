@@ -1,0 +1,165 @@
+---
+title: "Infant and Child Mortality in Colombia"
+output: html_document
+date: "2024-06-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+install.packages("haven")
+install.packages("dplyr")
+install.packages("tibble")
+install.packages("tidyr")
+```
+
+```{r}
+library("haven")
+library("dplyr")
+library("tibble")
+library("tidyr")
+```
+
+#Préparation des données
+
+```{r}
+somoza <- read_dta("https://grodri.github.io/datasets/somoza.dta") |>
+  mutate(age=as_factor(age), cohort=as_factor(cohort))
+
+somoza <- group_by(somoza, cohort, age) |>
+  summarize(deaths=sum(dead), survivors=sum(alive))
+```
+
+On regroupe les données par les cohortes et l'âge. On crée deux nouvelles 
+variables qui donnent le nombre de morts par âge et par cohorte, et le nombre de 
+personnes vivantes par âge et par cohorte.
+
+```{r}
+somoza <- mutate(somoza, 
+  start = sum(deaths+survivors) - c(0, cumsum(deaths+survivors)[-8]),
+  width = c(1,2,3,6,12,36,60,NA)[as.numeric(age)],       
+  exposure = width * (start -0.5*(deaths+survivors))/12) |>
+  filter(as.numeric(age) <= 7)
+```
+
+Ici, en calculant les sommes totales et cumulées des colonnes deaths et 
+survivors, on définit une valeur de départ "start" qui représente le début de la
+durée d'analyse de survie.
+Création de la variable exposition : on multiplie l'âge par une valeur ajustée 
+de start (qui est diminuée de la moitié de la somme de deaths et survivors) et 
+en divisant le tout par 12.
+La variable exposure mesure l'exposition moyenne annuelle de la population à un 
+risque de mortalité pendant une tranche d'âge spécifique. Elle prend en 
+compte la taille de la population au début de la tranche d'âge, les décès et les survivants pendant cette tranche d'âge et la durée de la tranche d'âge en mois.
+
+```{r}
+select(somoza, cohort, age, deaths, exposure) |>
+  mutate(exposure = num(exposure, digits=1))
+```
+```{r}
+somoza <- mutate(somoza, os=log(exposure))
+```
+On passe l'exposition au logaritge.
+
+```{r}
+mexp <- glm(deaths ~ 1, offset=os, family=poisson, data=somoza)
+  summary(mexp)
+
+```
+Modèle exponentiel : on regresse "deaths" sur 1 c'est à dire sur une constante :
+on ajuste un modèle de poisson sans variables explicatives.
+
+
+L'intercept de -3.99645, lorsqu'il est converti de l'échelle logarithmique à l'échelle normale, donne un taux moyen de décès de 0.01840.0184 par unité d'exposition. Cela signifie que, pour chaque unité d'exposition (par exemple, personne-année), on s'attend en moyenne à 0.01840.0184 décès.
+
+```{r}
+exp(coef(mexp))
+```
+
+L'intercept de -3.99645, lorsqu'il est converti de l'échelle logarithmique à l'échelle normale, donne un taux moyen de décès de 0.0183808 par unité d'exposition. Ainsi, pour chaque unité d'exposition, on s'attend en moyenne à 0.0183808 décès.
+
+```{r}
+mcoh <- glm(deaths ~ cohort, offset=os, family=poisson, data=somoza)
+summary(mcoh)
+```
+
+Ici on regresse sur la variable "cohorte".
+
+
+```{r}
+exp(coef(mcoh))
+```
+
+On a les différences sur l'échelle non logarithmique, de la mortalité entre ces 
+cohortes et la cohorte de référence (59).
+
+```{r}
+anova(mexp, mcoh)
+
+```
+
+
+```{r}
+wald <- function(model, pattern) {
+   indices = grep(pattern, names(coef(model)))
+   b <- coef(model)[indices]
+   V <- vcov(model)[indices, indices]
+   data.frame(wald=t(b) %*% solve(V) %*% b)
+ } 
+wald(mcoh, "cohort")
+```
+Test de significativité des modèles.
+
+```{r}
+mage <- glm(deaths ~ age, offset=os, family=poisson, data=somoza)
+summary(mage)
+```
+
+```{r}
+exp(coef(mage)[-1])
+```
+
+
+```{r}
+anova(mexp, mage)
+```
+
+
+```{r}
+wald(mage, "age")
+```
+
+L'analyse avec l'âge est plus pertinente qu'avec les cohortes.
+
+```{r}
+mphaz <-  glm(deaths ~ age + cohort, offset=os, family=poisson, data=somoza)
+summary(mphaz)
+```
+
+```{r}
+exp(coef(mphaz)[-1])
+```
+
+
+```{r}
+anova(mage, mphaz)
+```
+
+
+```{r}
+wald(mphaz, "cohort")
+```
+
+```{r}
+surv <- ungroup(somoza) |> 
+   mutate(rate = fitted(mphaz)/exposure,
+  cumhaz = cumsum(rate*width)/12,
+  survival = exp(-cumhaz)) |>
+  select(age, cohort, survival)
+
+pivot_wider(surv, names_from="cohort", values_from="survival")
+```
+
